@@ -1,0 +1,270 @@
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+local running = false
+local interval = 1.5
+local currentIndex = 1
+
+--========================================
+--  GUI
+--========================================
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "HalloweenTeleportUI"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- LOGO HALLOWEEN
+local logo = Instance.new("TextButton")
+logo.Name = "HalloweenLogo"
+logo.Size = UDim2.fromOffset(55, 55)
+logo.Position = UDim2.new(0, 20, 0.4, 0)
+logo.BackgroundColor3 = Color3.fromRGB(255, 125, 0)
+logo.Text = "🎃"
+logo.TextScaled = true
+logo.Parent = gui
+
+Instance.new("UICorner", logo).CornerRadius = UDim.new(1, 0)
+
+-- PANEL 
+local panel = Instance.new("Frame")
+panel.Name = "HalloweenPanel"
+panel.Size = UDim2.fromOffset(245, 360)
+panel.Position = UDim2.new(0, 85, 0.3, 0)
+panel.BackgroundColor3 = Color3.fromRGB(30, 20, 40)
+panel.Visible = false
+panel.Parent = gui
+
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 12)
+
+--========================================
+-- JUDUL PANEL
+--========================================
+
+local title = Instance.new("TextButton")
+title.Name = "DragTitle"
+title.Size = UDim2.new(1, -40, 0, 40)
+title.BackgroundColor3 = Color3.fromRGB(110, 40, 150)
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Text = "HALLOWEEN TELEPORT"
+title.TextScaled = true
+title.AutoButtonColor = false
+title.Parent = panel
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(40, 40)
+close.Position = UDim2.new(1, -40, 0, 0)
+close.BackgroundColor3 = Color3.fromRGB(180, 35, 35)
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Text = "X"
+close.TextScaled = true
+close.Parent = panel
+
+--========================================
+-- AUTO TELEPORT ON/OFF
+--========================================
+
+local autoButton = Instance.new("TextButton")
+autoButton.Position = UDim2.new(0, 8, 0, 48)
+autoButton.Size = UDim2.new(1, -16, 0, 40)
+autoButton.BackgroundColor3 = Color3.fromRGB(150, 35, 35)
+autoButton.TextColor3 = Color3.new(1, 1, 1)
+autoButton.Text = "AUTO TELEPORT: OFF"
+autoButton.TextScaled = true
+autoButton.Parent = panel
+
+Instance.new("UICorner", autoButton).CornerRadius = UDim.new(0, 8)
+
+-- STATUS TARGET
+local selectedLabel = Instance.new("TextLabel")
+selectedLabel.Size = UDim2.new(1, -16, 0, 24)
+selectedLabel.Position = UDim2.new(0, 8, 0, 92)
+selectedLabel.BackgroundTransparency = 1
+selectedLabel.TextColor3 = Color3.fromRGB(255, 210, 100)
+selectedLabel.Text = "Target: Halloween01"
+selectedLabel.TextScaled = true
+selectedLabel.Parent = panel
+
+--========================================
+--  HALLOWEEN
+--========================================
+
+local list = Instance.new("ScrollingFrame")
+list.Name = "HalloweenList"
+list.Position = UDim2.new(0, 8, 0, 122)
+list.Size = UDim2.new(1, -16, 1, -130)
+list.BackgroundTransparency = 1
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 6
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.Parent = panel
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 5)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = list
+
+layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    list.CanvasSize = UDim2.new(
+        0, 0, 0, layout.AbsoluteContentSize.Y + 5
+    )
+end)
+
+--========================================
+--  TELEPORT
+--========================================
+
+local function teleportTo(index)
+    local name = string.format("Halloween%02d", index)
+
+    local target = workspace:FindFirstChild(name, true)
+
+    if not target then
+        selectedLabel.Text = name .. " tidak ditemukan"
+        return false
+    end
+
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+
+    if not root then
+        return false
+    end
+
+    if target:IsA("Model") then
+        root.CFrame = target:GetPivot() + Vector3.new(0, 3, 0)
+        selectedLabel.Text = "Target: " .. name
+        return true
+
+    elseif target:IsA("BasePart") then
+        root.CFrame = target.CFrame + Vector3.new(0, 3, 0)
+        selectedLabel.Text = "Target: " .. name
+        return true
+    end
+
+    selectedLabel.Text = name .. " bukan target valid"
+    return false
+end
+
+--========================================
+-- TOMBOL HALLOWEEN 01-48
+--========================================
+
+for i = 1, 48 do
+    local index = i
+    local name = string.format("Halloween%02d", index)
+
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Size = UDim2.new(1, -5, 0, 34)
+    button.BackgroundColor3 = Color3.fromRGB(70, 50, 90)
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.Text = "HALLOWEEN " .. string.format("%02d", index)
+    button.TextScaled = true
+    button.LayoutOrder = index
+    button.Parent = list
+
+    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+
+    button.Activated:Connect(function()
+        currentIndex = index
+        selectedLabel.Text = "Target: " .. name
+
+        if not running then
+            teleportTo(index)
+        end
+    end)
+end
+
+--========================================
+-- AUTO TELEPORT ON/OFF
+--========================================
+
+autoButton.Activated:Connect(function()
+    running = not running
+
+    if running then
+        autoButton.Text = "AUTO TELEPORT: ON"
+        autoButton.BackgroundColor3 = Color3.fromRGB(25, 150, 65)
+
+        task.spawn(function()
+            while running do
+                teleportTo(currentIndex)
+
+                currentIndex += 1
+
+                if currentIndex > 48 then
+                    currentIndex = 1
+                end
+
+                task.wait(interval)
+            end
+        end)
+
+    else
+        autoButton.Text = "AUTO TELEPORT: OFF"
+        autoButton.BackgroundColor3 = Color3.fromRGB(150, 35, 35)
+    end
+end)
+
+--========================================
+-- 
+--========================================
+
+logo.Activated:Connect(function()
+    panel.Visible = not panel.Visible
+end)
+
+close.Activated:Connect(function()
+    panel.Visible = false
+end)
+
+--========================================
+-- 
+--========================================
+
+local function makeDraggable(object, dragArea)
+    local dragging = false
+    local dragStart
+    local startPosition
+    local activeInput
+
+    dragArea.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+            dragging = true
+            dragStart = input.Position
+            startPosition = object.Position
+            activeInput = input
+        end
+    end)
+
+    dragArea.InputEnded:Connect(function(input)
+        if input == activeInput then
+            dragging = false
+            activeInput = nil
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then
+            return
+        end
+
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+
+            local delta = input.Position - dragStart
+
+            object.Position = UDim2.new(
+                startPosition.X.Scale,
+                startPosition.X.Offset + delta.X,
+                startPosition.Y.Scale,
+                startPosition.Y.Offset + delta.Y
+            )
+        end
+    end)
+end

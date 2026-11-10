@@ -1,0 +1,1198 @@
+
+--==================================================
+-- AUTO WALK POINT DROP V3 + V4
+-- COMBINED GUI
+-- V3 SMART PATHFINDING + MULTI RAY
+-- V4 ISLAND BYPASS + BOUNDING BOX
+-- INDEPENDENT ON/OFF
+-- BOTH CAN BE ON SIMULTANEOUSLY
+-- SERVER/MAP CONTROLS SPEED
+-- NO NOCLIP
+--==================================================
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local PathfindingService = game:GetService("PathfindingService")
+local CoreGui = game:GetService("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+
+local Player = Players.LocalPlayer
+local Folder = Workspace:WaitForChild("PointDropsVisual")
+local Islands = Workspace:WaitForChild("Map"):WaitForChild("Islands")
+
+--==================================================
+-- INDEPENDENT SETTINGS
+--==================================================
+
+local V3Enabled = false
+local V4Enabled = false
+
+local V3Target = nil
+local V4Target = nil
+
+local V3Blacklist = {}
+local V4Blacklist = {}
+
+local GUI_NAME = "AutoWalkPointDropCombined"
+
+--==================================================
+-- CLEAN OLD GUI
+--==================================================
+
+pcall(function()
+    local old = CoreGui:FindFirstChild(GUI_NAME)
+    if old then
+        old:Destroy()
+    end
+end)
+
+--==================================================
+-- ANTI AUTO REJOIN
+--==================================================
+
+local RejoinEvents = {}
+
+pcall(function()
+    local events = ReplicatedStorage:FindFirstChild("Events")
+
+    if events then
+        local request = events:FindFirstChild("RequestRejoin")
+        local failed = events:FindFirstChild("RejoinFailed")
+
+        if request then
+            RejoinEvents[request] = true
+        end
+
+        if failed then
+            RejoinEvents[failed] = true
+        end
+    end
+end)
+
+if hookmetamethod and getnamecallmethod and newcclosure then
+    local oldNamecall
+
+    oldNamecall = hookmetamethod(
+        game,
+        "__namecall",
+        newcclosure(function(self, ...)
+            if RejoinEvents[self]
+                and getnamecallmethod() == "FireServer" then
+
+                warn("[ANTI REJOIN] Blocked:", self.Name)
+                return nil
+            end
+
+            return oldNamecall(self, ...)
+        end)
+    )
+
+    print("[ANTI REJOIN] Loaded")
+else
+    warn("[ANTI REJOIN] Executor does not support hookmetamethod")
+end
+
+--==================================================
+-- SHARED CHARACTER
+--==================================================
+
+local function getCharacter()
+    local char = Player.Character
+    if not char then return end
+
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+
+    if humanoid and root and humanoid.Health > 0 then
+        return char, humanoid, root
+    end
+end
+
+--==================================================
+-- SHARED POSITION
+--==================================================
+
+local function getPosition(obj)
+    if not obj or not obj.Parent then
+        return nil
+    end
+
+    if obj:IsA("BasePart") then
+        return obj.Position
+    elseif obj:IsA("Model") then
+        local ok, pivot = pcall(function()
+            return obj:GetPivot()
+        end)
+
+        if ok then
+            return pivot.Position
+        end
+    end
+
+    return nil
+end
+
+--==================================================
+-- COMBINED GUI
+--==================================================
+
+local gui = Instance.new("ScreenGui")
+gui.Name = GUI_NAME
+gui.ResetOnSpawn = false
+gui.Parent = CoreGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 245, 0, 190)
+frame.Position = UDim2.new(0.5, -122, 0.55, 0)
+frame.BackgroundColor3 = Color3.fromRGB(23, 23, 30)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+
+Instance.new("UICorner", frame).CornerRadius =
+    UDim.new(0, 12)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(75, 75, 90)
+stroke.Thickness = 1
+stroke.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 35)
+title.BackgroundTransparency = 1
+title.Text = "AUTO WALK POINT DROP"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 14
+title.Font = Enum.Font.GothamBold
+title.Parent = frame
+
+local subtitle = Instance.new("TextLabel")
+subtitle.Size = UDim2.new(1, 0, 0, 18)
+subtitle.Position = UDim2.new(0, 0, 0, 30)
+subtitle.BackgroundTransparency = 1
+subtitle.Text = "V3 + V4 INDEPENDENT CONTROL"
+subtitle.TextColor3 = Color3.fromRGB(160, 160, 175)
+subtitle.TextSize = 9
+subtitle.Font = Enum.Font.Gotham
+subtitle.Parent = frame
+
+local function createButton(name, y)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(0.86, 0, 0, 38)
+    button.Position = UDim2.new(0.07, 0, 0, y)
+    button.BackgroundColor3 = Color3.fromRGB(155, 45, 45)
+    button.Text = name .. ": OFF"
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.TextSize = 13
+    button.Font = Enum.Font.GothamBold
+    button.AutoButtonColor = true
+    button.Parent = frame
+
+    Instance.new("UICorner", button).CornerRadius =
+        UDim.new(0, 8)
+
+    return button
+end
+
+local V3Button = createButton("V3 SMART PATH", 57)
+local V4Button = createButton("V4 ISLAND BYPASS", 103)
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -12, 0, 20)
+statusLabel.Position = UDim2.new(0, 6, 0, 153)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "V3: OFF | V4: OFF"
+statusLabel.TextColor3 = Color3.fromRGB(190, 190, 190)
+statusLabel.TextSize = 10
+statusLabel.Font = Enum.Font.GothamBold
+statusLabel.Parent = frame
+
+--==================================================
+-- MOBILE GUI DRAG
+--==================================================
+
+local dragging = false
+local dragStart = nil
+local startPosition = nil
+
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = true
+        dragStart = input.Position
+        startPosition = frame.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+
+        local delta = input.Position - dragStart
+
+        frame.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = false
+    end
+end)
+
+--==================================================
+-- GUI STATUS
+--==================================================
+
+local function updateGUI()
+    if V3Enabled then
+        V3Button.Text = "V3 SMART PATH: ON"
+        V3Button.BackgroundColor3 = Color3.fromRGB(35, 145, 75)
+    else
+        V3Button.Text = "V3 SMART PATH: OFF"
+        V3Button.BackgroundColor3 = Color3.fromRGB(155, 45, 45)
+    end
+
+    if V4Enabled then
+        V4Button.Text = "V4 ISLAND BYPASS: ON"
+        V4Button.BackgroundColor3 = Color3.fromRGB(35, 145, 75)
+    else
+        V4Button.Text = "V4 ISLAND BYPASS: OFF"
+        V4Button.BackgroundColor3 = Color3.fromRGB(155, 45, 45)
+    end
+
+    statusLabel.Text =
+        "V3: " .. (V3Enabled and "ON" or "OFF")
+        .. " | V4: " .. (V4Enabled and "ON" or "OFF")
+end
+
+local function stopV3()
+    local _, humanoid, root = getCharacter()
+    if humanoid and root then
+        humanoid:MoveTo(root.Position)
+    end
+end
+
+local function stopV4()
+    local _, humanoid, root = getCharacter()
+    if humanoid and root then
+        humanoid:MoveTo(root.Position)
+    end
+end
+
+V3Button.MouseButton1Click:Connect(function()
+    V3Enabled = not V3Enabled
+    V3Target = nil
+
+    if not V3Enabled then
+        stopV3()
+    end
+
+    updateGUI()
+end)
+
+V4Button.MouseButton1Click:Connect(function()
+    V4Enabled = not V4Enabled
+    V4Target = nil
+
+    if not V4Enabled then
+        stopV4()
+    end
+
+    updateGUI()
+end)
+
+--==================================================
+-- ANTI SIT
+--==================================================
+
+local function setupCharacter(char)
+    local humanoid = char:WaitForChild("Humanoid", 10)
+    if not humanoid then return end
+
+    pcall(function()
+        humanoid:SetStateEnabled(
+            Enum.HumanoidStateType.Seated,
+            false
+        )
+    end)
+
+    humanoid:GetPropertyChangedSignal("Sit"):Connect(function()
+        if (V3Enabled or V4Enabled) and humanoid.Sit then
+            humanoid.Sit = false
+            humanoid:ChangeState(
+                Enum.HumanoidStateType.GettingUp
+            )
+        end
+    end)
+end
+
+if Player.Character then
+    task.spawn(setupCharacter, Player.Character)
+end
+
+Player.CharacterAdded:Connect(setupCharacter)
+
+--==================================================
+-- SHARED DROP SCANNER
+--==================================================
+
+local function getDrops(blacklist)
+    local drops = {}
+    local seen = {}
+
+    for _, obj in ipairs(Folder:GetDescendants()) do
+        if obj.Name == "PointDrop"
+            and not seen[obj]
+            and not blacklist[obj] then
+
+            seen[obj] = true
+
+            local pos = getPosition(obj)
+
+            if pos then
+                table.insert(drops, {
+                    Object = obj,
+                    Position = pos
+                })
+            end
+        end
+    end
+
+    return drops
+end
+
+local function findNearest(root, blacklist)
+    local nearest = nil
+    local shortest = math.huge
+
+    for _, drop in ipairs(getDrops(blacklist)) do
+        local distance =
+            (root.Position - drop.Position).Magnitude
+
+        if distance < shortest then
+            shortest = distance
+            nearest = drop.Object
+        end
+    end
+
+    return nearest
+end
+
+--==================================================
+-- V3 SETTINGS
+--==================================================
+
+local V3_ARRIVE_DISTANCE = 5
+local V3_RAY_DISTANCE = 14
+local V3_STUCK_TIMEOUT = 0.9
+local V3_STRAIGHT_TIMEOUT = 2.5
+local V3_WAYPOINT_TIMEOUT = 4
+
+local function V3_hasObstacle(root, targetPosition, target)
+    local direction = targetPosition - root.Position
+
+    local horizontal = Vector3.new(
+        direction.X, 0, direction.Z
+    )
+
+    if horizontal.Magnitude < 1 then
+        return false
+    end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+
+    local exclude = {Player.Character}
+    if target then
+        table.insert(exclude, target)
+    end
+
+    params.FilterDescendantsInstances = exclude
+    params.RespectCanCollide = true
+
+    local distance = math.min(
+        horizontal.Magnitude,
+        V3_RAY_DISTANCE
+    )
+
+    for _, height in ipairs({1, 3, 5}) do
+        local result = Workspace:Raycast(
+            root.Position + Vector3.new(0, height, 0),
+            horizontal.Unit * distance,
+            params
+        )
+
+        if result then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function V3_computePath(root, targetPosition)
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentJumpHeight = 10,
+        AgentCanClimb = true,
+        AgentMaxSlope = 45,
+        WaypointSpacing = 4
+    })
+
+    local success = pcall(function()
+        path:ComputeAsync(root.Position, targetPosition)
+    end)
+
+    if success and path.Status == Enum.PathStatus.Success then
+        return path
+    end
+
+    return nil
+end
+
+local function V3_isStuck(root, lastPosition, lastProgress)
+    if (root.Position - lastPosition).Magnitude > 0.8 then
+        return false
+    end
+
+    return os.clock() - lastProgress > V3_STUCK_TIMEOUT
+end
+
+local function V3_walkStraight(humanoid, root, target)
+    local position = getPosition(target)
+    if not position then return false end
+
+    humanoid:MoveTo(position)
+
+    local start = os.clock()
+    local lastPosition = root.Position
+    local lastProgress = os.clock()
+
+    while V3Enabled and target.Parent do
+        position = getPosition(target)
+        if not position then return false end
+
+        if (root.Position - position).Magnitude
+            <= V3_ARRIVE_DISTANCE then
+            return true
+        end
+
+        if humanoid.Sit then
+            humanoid.Sit = false
+            humanoid:ChangeState(
+                Enum.HumanoidStateType.GettingUp
+            )
+        end
+
+        if (root.Position - lastPosition).Magnitude > 0.8 then
+            lastPosition = root.Position
+            lastProgress = os.clock()
+        end
+
+        if V3_isStuck(root, lastPosition, lastProgress) then
+            return false
+        end
+
+        if os.clock() - start > V3_STRAIGHT_TIMEOUT then
+            return false
+        end
+
+        task.wait(0.1)
+    end
+
+    return false
+end
+
+local function V3_walkPath(humanoid, root, target)
+    local targetPosition = getPosition(target)
+    if not targetPosition then return false end
+
+    local path = V3_computePath(root, targetPosition)
+    if not path then return false end
+
+    local blocked = false
+    local currentWaypoint = 0
+
+    local connection = path.Blocked:Connect(function(index)
+        if index >= currentWaypoint then
+            blocked = true
+        end
+    end)
+
+    for index, waypoint in ipairs(path:GetWaypoints()) do
+        if not V3Enabled or blocked or not target.Parent then
+            break
+        end
+
+        currentWaypoint = index
+
+        if waypoint.Action == Enum.PathWaypointAction.Jump then
+            humanoid.Jump = true
+        end
+
+        humanoid:MoveTo(waypoint.Position)
+
+        local start = os.clock()
+        local lastPosition = root.Position
+        local lastProgress = os.clock()
+        local reached = false
+
+        while V3Enabled and not blocked and target.Parent do
+            if (root.Position - waypoint.Position).Magnitude <= 3 then
+                reached = true
+                break
+            end
+
+            if humanoid.Sit then
+                humanoid.Sit = false
+                humanoid:ChangeState(
+                    Enum.HumanoidStateType.GettingUp
+                )
+            end
+
+            if (root.Position - lastPosition).Magnitude > 0.8 then
+                lastPosition = root.Position
+                lastProgress = os.clock()
+            end
+
+            if V3_isStuck(root, lastPosition, lastProgress)
+                or os.clock() - start > V3_WAYPOINT_TIMEOUT then
+                blocked = true
+                break
+            end
+
+            task.wait(0.1)
+        end
+
+        if not reached then
+            blocked = true
+            break
+        end
+    end
+
+    connection:Disconnect()
+
+    if not V3Enabled then return false end
+
+    local finalPosition = getPosition(target)
+
+    return finalPosition ~= nil
+        and (root.Position - finalPosition).Magnitude
+            <= V3_ARRIVE_DISTANCE
+end
+
+local function V3_moveToDrop(humanoid, root, target)
+    local position = getPosition(target)
+    if not position then return false end
+
+    if V3_hasObstacle(root, position, target) then
+        return V3_walkPath(humanoid, root, target)
+    end
+
+    local success = V3_walkStraight(humanoid, root, target)
+    if success then return true end
+
+    if not V3Enabled or not target.Parent then
+        return false
+    end
+
+    return V3_walkPath(humanoid, root, target)
+end
+
+--==================================================
+-- V4 SETTINGS
+--==================================================
+
+local V4_ARRIVE_DISTANCE = 5
+local V4_BYPASS_MARGIN = 6
+local V4_STUCK_TIMEOUT = 1.5
+local V4_WAYPOINT_TIMEOUT = 5
+
+local function V4_makeRayParams(target)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+
+    local exclude = {Player.Character}
+    if target then
+        table.insert(exclude, target)
+    end
+
+    params.FilterDescendantsInstances = exclude
+    params.RespectCanCollide = true
+
+    return params
+end
+
+local function V4_detectObstacle(root, targetPosition, target)
+    local direction = targetPosition - root.Position
+
+    local horizontal = Vector3.new(
+        direction.X, 0, direction.Z
+    )
+
+    if horizontal.Magnitude < 1 then
+        return nil
+    end
+
+    local params = V4_makeRayParams(target)
+
+    for _, height in ipairs({1, 3, 5}) do
+        local result = Workspace:Raycast(
+            root.Position + Vector3.new(0, height, 0),
+            horizontal.Unit * math.min(horizontal.Magnitude, 16),
+            params
+        )
+
+        if result then
+            return result.Instance
+        end
+    end
+
+    return nil
+end
+
+local function V4_getObstacleRoot(part)
+    local current = part
+
+    while current
+        and current ~= Workspace
+        and current.Parent ~= Islands do
+
+        if current:IsA("Model") and current.Parent then
+            return current
+        end
+
+        current = current.Parent
+    end
+
+    return part
+end
+
+local function V4_getGroundPosition(x, z, target)
+    local params = V4_makeRayParams(target)
+
+    local result = Workspace:Raycast(
+        Vector3.new(x, 500, z),
+        Vector3.new(0, -1000, 0),
+        params
+    )
+
+    if result and result.Instance.CanCollide then
+        return result.Position + Vector3.new(0, 2.5, 0)
+    end
+
+    return nil
+end
+
+local function V4_computePath(root, destination)
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentJumpHeight = 10,
+        AgentCanClimb = true,
+        AgentMaxSlope = 45,
+        WaypointSpacing = 4
+    })
+
+    local ok = pcall(function()
+        path:ComputeAsync(root.Position, destination)
+    end)
+
+    if ok and path.Status == Enum.PathStatus.Success then
+        return path
+    end
+
+    return nil
+end
+
+local function V4_walkPath(humanoid, root, destination, target)
+    local path = V4_computePath(root, destination)
+    if not path then return false end
+
+    local blocked = false
+    local currentIndex = 0
+
+    local connection = path.Blocked:Connect(function(index)
+        if index >= currentIndex then
+            blocked = true
+        end
+    end)
+
+    for index, waypoint in ipairs(path:GetWaypoints()) do
+        if not V4Enabled or blocked then
+            break
+        end
+
+        currentIndex = index
+
+        if waypoint.Action == Enum.PathWaypointAction.Jump then
+            humanoid.Jump = true
+        end
+
+        humanoid:MoveTo(waypoint.Position)
+
+        local start = os.clock()
+        local lastPosition = root.Position
+        local lastProgress = os.clock()
+        local reached = false
+
+        while V4Enabled and not blocked do
+            if target and not target.Parent then
+                break
+            end
+
+            if (root.Position - waypoint.Position).Magnitude <= 3 then
+                reached = true
+                break
+            end
+
+            if (root.Position - lastPosition).Magnitude > 0.7 then
+                lastPosition = root.Position
+                lastProgress = os.clock()
+            end
+
+            if os.clock() - lastProgress > V4_STUCK_TIMEOUT
+                or os.clock() - start > V4_WAYPOINT_TIMEOUT then
+                blocked = true
+                break
+            end
+
+            if humanoid.Sit then
+                humanoid.Sit = false
+                humanoid:ChangeState(
+                    Enum.HumanoidStateType.GettingUp
+                )
+            end
+
+            task.wait(0.1)
+        end
+
+        if not reached then
+            blocked = true
+            break
+        end
+    end
+
+    connection:Disconnect()
+    return not blocked
+end
+
+local function V4_getBypassPoints(obstacle, root, targetPosition, target)
+    local points = {}
+
+    local ok, boxCF, boxSize = pcall(function()
+        if obstacle:IsA("Model") then
+            return obstacle:GetBoundingBox()
+        elseif obstacle:IsA("BasePart") then
+            return obstacle.CFrame, obstacle.Size
+        end
+    end)
+
+    if not ok or not boxCF or not boxSize then
+        return points
+    end
+
+    local center = boxCF.Position
+    local halfX = boxSize.X / 2 + V4_BYPASS_MARGIN
+    local halfZ = boxSize.Z / 2 + V4_BYPASS_MARGIN
+
+    local offsets = {
+        Vector3.new(-halfX, 0, -halfZ),
+        Vector3.new( halfX, 0, -halfZ),
+        Vector3.new(-halfX, 0,  halfZ),
+        Vector3.new( halfX, 0,  halfZ),
+        Vector3.new(-halfX, 0, 0),
+        Vector3.new( halfX, 0, 0),
+        Vector3.new(0, 0, -halfZ),
+        Vector3.new(0, 0,  halfZ)
+    }
+
+    for _, offset in ipairs(offsets) do
+        local worldPoint = center + offset
+
+        local ground = V4_getGroundPosition(
+            worldPoint.X,
+            worldPoint.Z,
+            target
+        )
+
+        if ground then
+            local distanceFromRoot =
+                (root.Position - ground).Magnitude
+
+            local distanceToTarget =
+                (targetPosition - ground).Magnitude
+
+            table.insert(points, {
+                Position = ground,
+                Score = distanceFromRoot + distanceToTarget
+            })
+        end
+    end
+
+    table.sort(points, function(a, b)
+        return a.Score < b.Score
+    end)
+
+    return points
+end
+
+local function V4_islandBypass(humanoid, root, target, obstacle)
+    local targetPosition = getPosition(target)
+    if not targetPosition then return false end
+
+    local obstacleRoot = V4_getObstacleRoot(obstacle)
+
+    local candidates = V4_getBypassPoints(
+        obstacleRoot,
+        root,
+        targetPosition,
+        target
+    )
+
+    if #candidates == 0 then
+        return false
+    end
+
+    for index, candidate in ipairs(candidates) do
+        if not V4Enabled then
+            return false
+        end
+
+        local success = V4_walkPath(
+            humanoid,
+            root,
+            candidate.Position,
+            target
+        )
+
+        if success then
+            local newPosition = getPosition(target)
+
+            if newPosition then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function V4_tryJumpToTarget(humanoid, root, target)
+    local position = getPosition(target)
+    if not position then return false end
+
+    humanoid.Jump = true
+    humanoid:MoveTo(position)
+
+    local start = os.clock()
+
+    while V4Enabled and target.Parent
+        and os.clock() - start < 2.5 do
+
+        position = getPosition(target)
+        if not position then return false end
+
+        if (root.Position - position).Magnitude
+            <= V4_ARRIVE_DISTANCE then
+            return true
+        end
+
+        task.wait(0.1)
+    end
+
+    return false
+end
+
+local function V4_moveToDrop(humanoid, root, target)
+    local position = getPosition(target)
+    if not position then return false end
+
+    local obstacle = V4_detectObstacle(root, position, target)
+
+    if obstacle then
+        local bypassSuccess = V4_islandBypass(
+            humanoid,
+            root,
+            target,
+            obstacle
+        )
+
+        if not V4Enabled then return false end
+
+        position = getPosition(target)
+        if not position then return false end
+
+        obstacle = V4_detectObstacle(root, position, target)
+
+        if not obstacle then
+            return true
+        end
+
+        if position.Y > root.Position.Y + 2 then
+            if V4_tryJumpToTarget(humanoid, root, target) then
+                return true
+            end
+        end
+
+        return bypassSuccess
+    end
+
+    humanoid:MoveTo(position)
+
+    local start = os.clock()
+    local lastPosition = root.Position
+    local lastProgress = os.clock()
+
+    while V4Enabled and target.Parent do
+        position = getPosition(target)
+        if not position then return false end
+
+        if (root.Position - position).Magnitude
+            <= V4_ARRIVE_DISTANCE then
+            return true
+        end
+
+        if (root.Position - lastPosition).Magnitude > 0.7 then
+            lastPosition = root.Position
+            lastProgress = os.clock()
+        end
+
+        if humanoid.Sit then
+            humanoid.Sit = false
+            humanoid:ChangeState(
+                Enum.HumanoidStateType.GettingUp
+            )
+        end
+
+        if os.clock() - lastProgress > V4_STUCK_TIMEOUT
+            or os.clock() - start > V4_WAYPOINT_TIMEOUT then
+
+            local hit = V4_detectObstacle(root, position, target)
+
+            if hit then
+                return V4_islandBypass(
+                    humanoid,
+                    root,
+                    target,
+                    hit
+                )
+            end
+
+            return V4_walkPath(
+                humanoid,
+                root,
+                position,
+                target
+            )
+        end
+
+        task.wait(0.1)
+    end
+
+    return false
+end
+
+--==================================================
+-- NEW DROP DETECTION
+--==================================================
+
+Folder.DescendantAdded:Connect(function(obj)
+    if obj.Name == "PointDrop" then
+        V3Blacklist[obj] = nil
+        V4Blacklist[obj] = nil
+    end
+end)
+
+--==================================================
+-- V3 MAIN LOOP
+--==================================================
+
+task.spawn(function()
+    while gui.Parent do
+        task.wait(0.15)
+
+        if not V3Enabled then
+            continue
+        end
+
+        local char, humanoid, root = getCharacter()
+
+        if not char then
+            continue
+        end
+
+        if humanoid.Sit then
+            humanoid.Sit = false
+            humanoid:ChangeState(
+                Enum.HumanoidStateType.GettingUp
+            )
+        end
+
+        if not V3Target
+            or not V3Target.Parent
+            or not getPosition(V3Target)
+            or V3Blacklist[V3Target] then
+
+            V3Target = findNearest(root, V3Blacklist)
+        end
+
+        if not V3Target then
+            continue
+        end
+
+        local target = V3Target
+        local position = getPosition(target)
+
+        if position then
+            if (root.Position - position).Magnitude
+                <= V3_ARRIVE_DISTANCE then
+
+                V3Blacklist[target] = true
+                V3Target = nil
+            else
+                local success = V3_moveToDrop(
+                    humanoid,
+                    root,
+                    target
+                )
+
+                if not V3Enabled then
+                    continue
+                end
+
+                if not target.Parent then
+                    V3Target = nil
+                elseif success then
+                    local finalPosition = getPosition(target)
+
+                    if finalPosition and
+                        (root.Position - finalPosition).Magnitude
+                        <= V3_ARRIVE_DISTANCE then
+
+                        V3Blacklist[target] = true
+                        V3Target = nil
+                    end
+                else
+                    task.wait(0.25)
+                end
+            end
+        else
+            V3Target = nil
+        end
+    end
+end)
+
+--==================================================
+-- V4 MAIN LOOP
+--==================================================
+
+task.spawn(function()
+    while gui.Parent do
+        task.wait(0.15)
+
+        if not V4Enabled then
+            continue
+        end
+
+        local char, humanoid, root = getCharacter()
+
+        if not char then
+            continue
+        end
+
+        if humanoid.Sit then
+            humanoid.Sit = false
+            humanoid:ChangeState(
+                Enum.HumanoidStateType.GettingUp
+            )
+        end
+
+        if not V4Target
+            or not V4Target.Parent
+            or not getPosition(V4Target)
+            or V4Blacklist[V4Target] then
+
+            V4Target = findNearest(root, V4Blacklist)
+        end
+
+        if not V4Target then
+            continue
+        end
+
+        local target = V4Target
+        local position = getPosition(target)
+
+        if position then
+            if (root.Position - position).Magnitude
+                <= V4_ARRIVE_DISTANCE then
+
+                V4Blacklist[target] = true
+                V4Target = nil
+            else
+                local success = V4_moveToDrop(
+                    humanoid,
+                    root,
+                    target
+                )
+
+                if not V4Enabled then
+                    continue
+                end
+
+                if not target.Parent then
+                    V4Target = nil
+                elseif success then
+                    local finalPosition = getPosition(target)
+
+                    if finalPosition and
+                        (root.Position - finalPosition).Magnitude
+                        <= V4_ARRIVE_DISTANCE then
+
+                        V4Blacklist[target] = true
+                        V4Target = nil
+                    else
+                        task.wait(0.2)
+                    end
+                else
+                    task.wait(0.4)
+                end
+            end
+        else
+            V4Target = nil
+        end
+    end
+end)
+
+--==================================================
+-- LOADED
+--==================================================
+
+updateGUI()
+
+print("====================================")
+print("AUTO WALK POINT DROP V3 + V4 LOADED")
+print("V3 SMART PATHFINDING: READY")
+print("V4 ISLAND BYPASS: READY")
+print("INDEPENDENT ON/OFF BUTTONS")
+print("BOTH CAN RUN SIMULTANEOUSLY")
+print("ANTI SIT")
+print("ANTI AUTO REJOIN")
+print("NO NOCLIP")
+print("SERVER CONTROLS SPEED")
+print("====================================")

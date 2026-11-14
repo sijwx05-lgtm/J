@@ -1,0 +1,623 @@
+
+-- EGG SWEEPER FULL AUTO
+-- Exact Constraint Solver + Auto Dig Safe
+-- Delta / Arceus X
+-- GREEN = SAFE
+-- RED = BOMB
+-- YELLOW = UNKNOWN
+-- NO AUTO FLAG
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+local MiniNet = require(
+    ReplicatedStorage.Packages.MiniNet
+).Client()
+
+local GUI_NAME = "EggSweeperFullAuto"
+local SCAN_DELAY = 0.4
+local DIG_COOLDOWN = 1
+local MAX_NODES = 50000
+
+if PlayerGui:FindFirstChild(GUI_NAME) then
+    PlayerGui[GUI_NAME]:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = GUI_NAME
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = PlayerGui
+
+local Toggle = Instance.new("TextButton")
+Toggle.Size = UDim2.fromOffset(165, 45)
+Toggle.Position = UDim2.new(0, 15, 0.5, 0)
+Toggle.BackgroundColor3 = Color3.fromRGB(35, 155, 75)
+Toggle.Text = "AUTO DIG: ON"
+Toggle.TextColor3 = Color3.new(1,1,1)
+Toggle.TextSize = 14
+Toggle.Font = Enum.Font.GothamBold
+Toggle.Active = true
+Toggle.Draggable = true
+Toggle.Parent = ScreenGui
+
+Instance.new("UICorner", Toggle).CornerRadius =
+    UDim.new(0, 10)
+
+local enabled = true
+local board
+local tiles = {}
+local markers = {}
+local attempted = {}
+local lastDig = 0
+
+local COLORS = {
+    bomb = Color3.fromRGB(255, 55, 55),
+    safe = Color3.fromRGB(40, 255, 115),
+    unknown = Color3.fromRGB(255, 205, 30)
+}
+
+-- FIND BOARD
+
+local function findBoard()
+    local best
+    local bestCount = 0
+
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if obj.Name == "Board" then
+            local count = 0
+
+            for _, child in ipairs(obj:GetChildren()) do
+                if child:IsA("GuiButton")
+                    and child.Name:match("^(%d+)_(%d+)$") then
+                    count = count + 1
+                end
+            end
+
+            if count > bestCount then
+                best = obj
+                bestCount = count
+            end
+        end
+    end
+
+    if bestCount >= 60 then
+        return best
+    end
+end
+
+-- CLEAR MARKERS
+
+local function clearMarkers()
+    for _, data in pairs(markers) do
+        if data.label then
+            data.label:Destroy()
+        end
+
+        if data.stroke then
+            data.stroke:Destroy()
+        end
+    end
+
+    table.clear(markers)
+end
+
+-- DRAW MARKERS
+
+local function mark(tile, kind)
+    local color = COLORS[kind]
+
+    local label = Instance.new("TextLabel")
+    label.Name = "AutoSweeperMark"
+    label.Size = UDim2.fromScale(1,1)
+    label.BackgroundTransparency = 1
+
+    if kind == "bomb" then
+        label.Text = "💣"
+    elseif kind == "safe" then
+        label.Text = "✓"
+    else
+        label.Text = "?"
+    end
+
+    label.TextColor3 = color
+    label.TextStrokeTransparency = 0
+    label.TextStrokeColor3 = Color3.new(0,0,0)
+    label.TextScaled = true
+    label.Font = Enum.Font.GothamBlack
+    label.ZIndex = 20
+    label.Active = false
+    label.Parent = tile
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Name = "AutoSweeperOutline"
+    stroke.Color = color
+    stroke.Thickness = 2.5
+    stroke.Parent = tile
+
+    markers[tile] = {
+        label = label,
+        stroke = stroke
+    }
+end
+
+-- READ BOARD
+
+local function readBoard()
+    if not board or not board.Parent then
+        board = findBoard()
+    end
+
+    if not board then
+        return false
+    end
+
+    table.clear(tiles)
+
+    for _, tile in ipairs(board:GetChildren()) do
+        if tile:IsA("GuiButton") then
+            local x, y = tile.Name:match("^(%d+)_(%d+)$")
+
+            if x and y then
+                x = tonumber(x)
+                y = tonumber(y)
+
+                local shine = tile:FindFirstChild("Shine")
+                local value = tostring(tile.Text or "")
+
+                local flagged = value:find("🚩") ~= nil
+                local hit = value:find("💣") ~= nil
+
+                local number = tonumber(value)
+
+                local revealed =
+                    shine ~= nil
+                    and shine.Visible == false
+                    and not hit
+
+                local key = x .. "_" .. y
+
+                tiles[key] = {
+                    tile = tile,
+                    x = x,
+                    y = y,
+                    number = number,
+                    flagged = flagged,
+                    hit = hit,
+                    revealed = revealed
+                }
+
+                if revealed then
+                    attempted[key] = nil
+                end
+            end
+        end
+    end
+
+    return true
+end
+
+-- ADJACENT TILES
+
+local function adjacent(x, y)
+    local result = {}
+
+    for dx = -1, 1 do
+        for dy = -1, 1 do
+            if dx ~= 0 or dy ~= 0 then
+                local key =
+                    (x + dx) .. "_" .. (y + dy)
+
+                if tiles[key] then
+                    table.insert(result, key)
+                end
+            end
+        end
+    end
+
+    return result
+end
+
+-- AUTO DIG ONLY CONFIRMED SAFE
+
+local function autoDigSafe(results)
+    if not enabled then return end
+
+    if os.clock() - lastDig < DIG_COOLDOWN then
+        return
+    end
+
+    for key, result in pairs(results) do
+        if result == "safe" then
+            local info = tiles[key]
+
+            if info
+                and not info.revealed
+                and not info.flagged
+                and not info.hit then
+
+                local previous = attempted[key]
+
+                if not previous
+                    or os.clock() - previous > 8 then
+
+                    attempted[key] = os.clock()
+                    lastDig = os.clock()
+
+                    local x = info.x
+                    local y = info.y
+
+                    task.spawn(function()
+                        local success = pcall(function()
+                            MiniNet.FireServer(
+                                "SweeperDig",
+                                x,
+                                y
+                            )
+                        end)
+
+                        if not success then
+                            attempted[key] = nil
+                        end
+                    end)
+
+                    return
+                end
+            end
+        end
+    end
+end
+
+-- SOLVER
+
+local function solve()
+    if not enabled then
+        clearMarkers()
+        return
+    end
+
+    if not readBoard() then
+        return
+    end
+
+    clearMarkers()
+
+    local constraints = {}
+    local results = {}
+    local invalid = false
+
+    local knownBombs = {}
+
+    for key, info in pairs(tiles) do
+        if info.hit then
+            knownBombs[key] = true
+        end
+    end
+
+    -- BUILD CONSTRAINTS
+
+    for key, info in pairs(tiles) do
+        if info.revealed and info.number ~= nil then
+            local unknown = {}
+            local bombCount = 0
+
+            for _, near in ipairs(adjacent(info.x, info.y)) do
+                local other = tiles[near]
+
+                if other.flagged or knownBombs[near] then
+                    bombCount = bombCount + 1
+
+                elseif not other.revealed then
+                    table.insert(unknown, near)
+                end
+            end
+
+            local remaining = info.number - bombCount
+
+            if remaining < 0
+                or remaining > #unknown then
+
+                invalid = true
+
+            elseif #unknown > 0 then
+                table.sort(unknown)
+
+                table.insert(constraints, {
+                    cells = unknown,
+                    count = remaining
+                })
+
+            elseif remaining ~= 0 then
+                invalid = true
+            end
+        end
+    end
+
+    -- VALIDATE CONSTRAINTS
+
+    local signatures = {}
+
+    for _, c in ipairs(constraints) do
+        local signature = table.concat(c.cells, ",")
+
+        if signatures[signature] ~= nil
+            and signatures[signature] ~= c.count then
+            invalid = true
+        end
+
+        signatures[signature] = c.count
+    end
+
+    if invalid then
+        for key, info in pairs(tiles) do
+            if not info.revealed
+                and not info.hit
+                and not info.flagged then
+
+                mark(info.tile, "unknown")
+            end
+        end
+
+        return
+    end
+
+    -- VARIABLE LINKS
+
+    local links = {}
+
+    for ci, c in ipairs(constraints) do
+        for _, key in ipairs(c.cells) do
+            links[key] = links[key] or {}
+            table.insert(links[key], ci)
+        end
+    end
+
+    local visited = {}
+
+    -- CONNECTED COMPONENTS
+
+    for startKey in pairs(links) do
+        if not visited[startKey] then
+            local component = {}
+            local queue = {startKey}
+            local constraintSet = {}
+
+            visited[startKey] = true
+
+            local qi = 1
+
+            while qi <= #queue do
+                local key = queue[qi]
+                qi = qi + 1
+
+                table.insert(component, key)
+
+                for _, ci in ipairs(links[key]) do
+                    if not constraintSet[ci] then
+                        constraintSet[ci] = true
+
+                        for _, other in ipairs(
+                            constraints[ci].cells
+                        ) do
+                            if not visited[other] then
+                                visited[other] = true
+                                table.insert(queue, other)
+                            end
+                        end
+                    end
+                end
+            end
+
+            local ids = {}
+
+            for i, key in ipairs(component) do
+                ids[key] = i
+            end
+
+            local localConstraints = {}
+
+            for ci in pairs(constraintSet) do
+                local c = constraints[ci]
+                local vars = {}
+
+                for _, key in ipairs(c.cells) do
+                    table.insert(vars, ids[key])
+                end
+
+                table.insert(localConstraints, {
+                    vars = vars,
+                    count = c.count
+                })
+            end
+
+            local nodes = 0
+            local solutions = 0
+            local canSafe = {}
+            local canBomb = {}
+
+            -- PROPAGATION
+
+            local function propagate(assign)
+                local changed = true
+
+                while changed do
+                    changed = false
+
+                    for _, c in ipairs(localConstraints) do
+                        local bombs = 0
+                        local unknown = {}
+
+                        for _, id in ipairs(c.vars) do
+                            local value = assign[id]
+
+                            if value == 1 then
+                                bombs = bombs + 1
+
+                            elseif value == nil then
+                                table.insert(unknown, id)
+                            end
+                        end
+
+                        local needed = c.count - bombs
+
+                        if needed < 0
+                            or needed > #unknown then
+                            return false
+                        end
+
+                        local forced
+
+                        if #unknown > 0 then
+                            if needed == 0 then
+                                forced = 0
+                            elseif needed == #unknown then
+                                forced = 1
+                            end
+                        end
+
+                        if forced ~= nil then
+                            for _, id in ipairs(unknown) do
+                                assign[id] = forced
+                                changed = true
+                            end
+                        end
+                    end
+                end
+
+                return true
+            end
+
+            -- EXACT SEARCH
+
+            local function search(assign)
+                nodes = nodes + 1
+
+                if nodes > MAX_NODES then
+                    return
+                end
+
+                if not propagate(assign) then
+                    return
+                end
+
+                local best
+                local bestScore = -1
+
+                for id = 1, #component do
+                    if assign[id] == nil then
+                        local score = 0
+
+                        for _, c in ipairs(localConstraints) do
+                            for _, v in ipairs(c.vars) do
+                                if v == id then
+                                    score = score + 1
+                                end
+                            end
+                        end
+
+                        if score > bestScore then
+                            best = id
+                            bestScore = score
+                        end
+                    end
+                end
+
+                if not best then
+                    solutions = solutions + 1
+
+                    for id = 1, #component do
+                        if assign[id] == 1 then
+                            canBomb[id] = true
+                        else
+                            canSafe[id] = true
+                        end
+                    end
+
+                    return
+                end
+
+                local safeBranch = table.clone(assign)
+                safeBranch[best] = 0
+                search(safeBranch)
+
+                if nodes > MAX_NODES then
+                    return
+                end
+
+                local bombBranch = table.clone(assign)
+                bombBranch[best] = 1
+                search(bombBranch)
+            end
+
+            search({})
+
+            -- TRUST ONLY COMPLETE SEARCH
+
+            if nodes <= MAX_NODES and solutions > 0 then
+                for id, key in ipairs(component) do
+                    if canBomb[id] and not canSafe[id] then
+                        results[key] = "bomb"
+
+                    elseif canSafe[id] and not canBomb[id] then
+                        results[key] = "safe"
+                    end
+                end
+            end
+        end
+    end
+
+    -- DRAW DETECTOR
+
+    for key, info in pairs(tiles) do
+        if not info.revealed
+            and not info.hit
+            and not info.flagged then
+
+            local result = results[key]
+
+            if result then
+                mark(info.tile, result)
+            else
+                mark(info.tile, "unknown")
+            end
+        end
+    end
+
+    -- AUTO DIG GREEN ONLY
+
+    autoDigSafe(results)
+end
+
+-- TOGGLE
+
+Toggle.Activated:Connect(function()
+    enabled = not enabled
+
+    Toggle.Text = enabled
+        and "AUTO DIG: ON"
+        or "AUTO DIG: OFF"
+
+    Toggle.BackgroundColor3 = enabled
+        and Color3.fromRGB(35, 155, 75)
+        or Color3.fromRGB(175, 50, 50)
+
+    if not enabled then
+        clearMarkers()
+    end
+end)
+
+-- MAIN LOOP
+
+task.spawn(function()
+    while ScreenGui.Parent do
+        if enabled then
+            pcall(solve)
+        end
+
+        task.wait(SCAN_DELAY)
+    end
+end)
+
+print("EGG SWEEPER FULL AUTO LOADED")
